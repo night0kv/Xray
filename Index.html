@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Фото Обработчик для Эффекта Прозрачности</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 20px;
+            padding: 20px;
+            max-width: 800px;
+            margin: auto;
+        }
+        h1 {
+            text-align: center;
+        }
+        #controls {
+            margin: 20px 0;
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        label {
+            display: block;
+            margin: 10px 0;
+        }
+        input[type="range"] {
+            width: 100%;
+        }
+        canvas {
+            display: block;
+            margin: 10px auto;
+            border: 1px solid #ccc;
+            max-width: 100%;
+        }
+        #originalCanvas, #processedCanvas {
+            max-height: 400px;
+        }
+        button {
+            display: block;
+            margin: 10px auto;
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        #downloadBtn {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Обработчик Фото для Эффекта Прозрачности Одежды</h1>
+    <p>Загрузите фото. Сайт автоматически применит базовую обработку (десатурация, high pass фильтр, корректировка контраста). Используйте ползунки для настройки. Эффект работает лучше на фото с облегающей светлой одеждой. Для указания области: кликните на обработанном фото, чтобы применить эффект локально (в радиусе 100px вокруг клика), но по умолчанию применяется ко всему.</p>
+    
+    <input type="file" id="fileInput" accept="image/*">
+    
+    <div id="controls">
+        <label>Резкость (High Pass Radius): <input type="range" id="sharpness" min="1" max="100" value="80"></label>
+        <span id="sharpnessValue">80</span>
+        
+        <label>Контраст: <input type="range" id="contrast" min="0" max="200" value="100"></label>
+        <span id="contrastValue">100</span>
+        
+        <label>Яркость: <input type="range" id="brightness" min="-100" max="100" value="0"></label>
+        <span id="brightnessValue">0</span>
+        
+        <label>Размытие (Gaussian Blur): <input type="range" id="blur" min="0" max="10" value="2"></label>
+        <span id="blurValue">2</span>
+    </div>
+    
+    <canvas id="originalCanvas"></canvas>
+    <canvas id="processedCanvas"></canvas>
+    
+    <button id="downloadBtn">Скачать Обработанное Фото</button>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const originalCanvas = document.getElementById('originalCanvas');
+        const processedCanvas = document.getElementById('processedCanvas');
+        const downloadBtn = document.getElementById('downloadBtn');
+        
+        const sharpnessSlider = document.getElementById('sharpness');
+        const contrastSlider = document.getElementById('contrast');
+        const brightnessSlider = document.getElementById('brightness');
+        const blurSlider = document.getElementById('blur');
+        
+        const sharpnessValue = document.getElementById('sharpnessValue');
+        const contrastValue = document.getElementById('contrastValue');
+        const brightnessValue = document.getElementById('brightnessValue');
+        const blurValue = document.getElementById('blurValue');
+        
+        let originalImage = new Image();
+        let originalData; // Для хранения оригинальных пикселей
+        let applyLocal = false; // Флаг для локального применения
+        let clickX = 0, clickY = 0; // Координаты клика
+        
+        // Обновление значений слайдеров
+        sharpnessSlider.addEventListener('input', () => { sharpnessValue.textContent = sharpnessSlider.value; processImage(); });
+        contrastSlider.addEventListener('input', () => { contrastValue.textContent = contrastSlider.value; processImage(); });
+        brightnessSlider.addEventListener('input', () => { brightnessValue.textContent = brightnessSlider.value; processImage(); });
+        blurSlider.addEventListener('input', () => { blurValue.textContent = blurSlider.value; processImage(); });
+        
+        // Загрузка изображения
+        fileInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    originalImage.src = e.target.result;
+                    originalImage.onload = () => {
+                        const width = originalImage.width;
+                        const height = originalImage.height;
+                        originalCanvas.width = width;
+                        originalCanvas.height = height;
+                        processedCanvas.width = width;
+                        processedCanvas.height = height;
+                        
+                        const ctxOriginal = originalCanvas.getContext('2d');
+                        ctxOriginal.drawImage(originalImage, 0, 0, width, height);
+                        
+                        // Сохраняем оригинальные данные
+                        originalData = ctxOriginal.getImageData(0, 0, width, height);
+                        
+                        // Автоматическая обработка
+                        processImage();
+                        downloadBtn.style.display = 'block';
+                    };
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+        
+        // Клик на processedCanvas для локального применения
+        processedCanvas.addEventListener('click', (event) => {
+            const rect = processedCanvas.getBoundingClientRect();
+            clickX = event.clientX - rect.left;
+            clickY = event.clientY - rect.top;
+            applyLocal = true;
+            processImage();
+        });
+        
+        // Функция обработки изображения
+        function processImage() {
+            const ctxProcessed = processedCanvas.getContext('2d');
+            
+            // Начинаем с оригинала
+            let imageData = new ImageData(new Uint8ClampedArray(originalData.data), originalData.width, originalData.height);
+            
+            // Шаг 1: Десатурация (grayscale)
+            toGrayscale(imageData);
+            
+            // Шаг 2: Gaussian Blur
+            const blurRadius = parseFloat(blurSlider.value);
+            if (blurRadius > 0) {
+                gaussianBlur(imageData, blurRadius);
+            }
+            
+            // Шаг 3: High Pass Filter
+            const highPassRadius = parseInt(sharpnessSlider.value);
+            highPassFilter(imageData, highPassRadius);
+            
+            // Шаг 4: Корректировка контраста и яркости
+            const contrast = (parseInt(contrastSlider.value) / 100) * 2; // 0-4 диапазон
+            const brightness = parseInt(brightnessSlider.value);
+            adjustContrastBrightness(imageData, contrast, brightness);
+            
+            // Если локальное применение, применяем только в радиусе
+            if (applyLocal) {
+                applyLocalEffect(imageData, clickX, clickY, 100); // Радиус 100px
+            }
+            
+            // Рисуем на canvas
+            ctxProcessed.putImageData(imageData, 0, 0);
+        }
+        
+        // Функция grayscale
+        function toGrayscale(imageData) {
+            const data = imageData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+                data[i] = data[i+1] = data[i+2] = avg;
+            }
+        }
+        
+        // Простая реализация Gaussian Blur (approximation with box blur)
+        function gaussianBlur(imageData, radius) {
+            boxBlur(imageData, radius, 3); // 3 итерации для аппроксимации gaussian
+        }
+        
+        function boxBlur(imageData, radius, iterations) {
+            for (let iter = 0; iter < iterations; iter++) {
+                boxBlurHorizontal(imageData, radius);
+                boxBlurVertical(imageData, radius);
+            }
+        }
+        
+        function boxBlurHorizontal(imageData, radius) {
+            const width = imageData.width;
+            const height = imageData.height;
+            const data = imageData.data;
+            const newData = new Uint8ClampedArray(data);
+            
+            for (let y = 0; y < height; y++) {
+                let rSum = 0, gSum = 0, bSum = 0, aSum = 0;
+                let count = 0;
+                
+                for (let x = -radius; x < width; x++) {
+                    const clampedX = Math.max(0, Math.min(x, width - 1));
+                    const i = (y * width + clampedX) * 4;
+                    rSum += data[i];
+                    gSum += data[i+1];
+                    bSum += data[i+2];
+                    aSum += data[i+3];
+                    count++;
+                    
+                    if (x >= 0) {
+                        const outI = (y * width + x) * 4;
+                        newData[outI] = Math.round(rSum / count);
+                        newData[outI+1] = Math.round(gSum / count);
+                        newData[outI+2] = Math.round(bSum / count);
+                        newData[outI+3] = Math.round(aSum / count);
+                    }
+                    
+                    if (x >= radius) {
+                        const removeX = x - radius;
+                        const removeI = (y * width + removeX) * 4;
+                        rSum -= data[removeI];
+                        gSum -= data[removeI+1];
+                        bSum -= data[removeI+2];
+                        aSum -= data[removeI+3];
+                        count--;
+                    }
+                }
+            }
+            imageData.data.set(newData);
+        }
+        
+        function boxBlurVertical(imageData, radius) {
+            const width = imageData.width;
+            const height = imageData.height;
+            const data = imageData.data;
+            const newData = new Uint8ClampedArray(data);
+            
+            for (let x = 0; x < width; x++) {
+                let rSum = 0, gSum = 0, bSum = 0, aSum = 0;
+                let count = 0;
+                
+                for (let y = -radius; y < height; y++) {
+                    const clampedY = Math.max(0, Math.min(y, height - 1));
+                    const i = (clampedY * width + x) * 4;
+                    rSum += data[i];
+                    gSum += data[i+1];
+                    bSum += data[i+2];
+                    aSum += data[i+3];
+                    count++;
+                    
+                    if (y >= 0) {
+                        const outI = (y * width + x) * 4;
+                        newData[outI] = Math.round(rSum / count);
+                        newData[outI+1] = Math.round(gSum / count);
+                        newData[outI+2] = Math.round(bSum / count);
+                        newData[outI+3] = Math.round(aSum / count);
+                    }
+                    
+                    if (y >= radius) {
+                        const removeY = y - radius;
+                        const removeI = (removeY * width + x) * 4;
+                        rSum -= data[removeI];
+                        gSum -= data[removeI+1];
+                        bSum -= data[removeI+2];
+                        aSum -= data[removeI+3];
+                        count--;
+                    }
+                }
+            }
+            imageData.data.set(newData);
+        }
+        
+        // High Pass Filter: original - blurred
+        function highPassFilter(imageData, radius) {
+            const blurred = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+            gaussianBlur(blurred, radius / 10); // Уменьшаем радиус для high pass
+            
+            const data = imageData.data;
+            const blurredData = blurred.data;
+            for (let i = 0; i < data.length; i += 4) {
+                data[i] = 128 + (data[i] - blurredData[i]);
+                data[i+1] = 128 + (data[i+1] - blurredData[i+1]);
+                data[i+2] = 128 + (data[i+2] - blurredData[i+2]);
+            }
+        }
+        
+        // Корректировка контраста и яркости
+        function adjustContrastBrightness(imageData, contrast, brightness) {
+            const data = imageData.data;
+            const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+            for (let i = 0; i < data.length; i += 4) {
+                data[i] = clamp(factor * (data[i] - 128) + 128 + brightness);
+                data[i+1] = clamp(factor * (data[i+1] - 128) + 128 + brightness);
+                data[i+2] = clamp(factor * (data[i+2] - 128) + 128 + brightness);
+            }
+        }
+        
+        function clamp(value) {
+            return Math.max(0, Math.min(255, value));
+        }
+        
+        // Локальное применение (маска в радиусе)
+        function applyLocalEffect(imageData, cx, cy, radius) {
+            const original = new ImageData(new Uint8ClampedArray(originalData.data), originalData.width, originalData.height);
+            const data = imageData.data;
+            const origData = original.data;
+            const width = imageData.width;
+            const height = imageData.height;
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const dist = Math.sqrt((x - cx)**2 + (y - cy)**2);
+                    if (dist > radius) {
+                        const i = (y * width + x) * 4;
+                        data[i] = origData[i];
+                        data[i+1] = origData[i+1];
+                        data[i+2] = origData[i+2];
+                        data[i+3] = origData[i+3];
+                    }
+                }
+            }
+        }
+        
+        // Скачивание
+        downloadBtn.addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.download = 'processed_image.png';
+            link.href = processedCanvas.toDataURL('image/png');
+            link.click();
+        });
+    </script>
+</body>
+</html>
